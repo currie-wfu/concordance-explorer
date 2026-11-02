@@ -1,0 +1,1093 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Compare two DESeq2 contrasts: overlap, directional concordance against a transcriptome-wide null, and an exportable scatter.">
+<style>
+:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;font:14px system-ui,-apple-system,sans-serif}
+img{max-width:100%}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<title>Concordance Explorer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+
+<style>
+/* Layout: a loading rail and a control rail stacked above one dominant plot,
+   with the statistics readout and the shared-gene table beneath it. */
+:root{
+  --surface:#fcfcfb;        /* chart + page surface, matches the project's figures */
+  --panel:#f4f3ef;
+  --line:#e2e0d9;
+  --ink:#0b0b0b;
+  --ink2:#52514e;
+  --ink3:#8a8982;
+  --series-1:#2a78d6;       /* shared / concordant */
+  --series-2:#eb6834;       /* highlighted gene set */
+  --mark-one:#aebfd4;       /* DE in a single contrast */
+  --mark-none:#e3e1da;      /* not differentially expressed */
+  --grid:#edebe5;
+  --focus:#2a78d6;
+  --font-display:"IBM Plex Serif",Georgia,"Times New Roman",serif;
+  --font-ui:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  --font-data:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --surface:#1a1a19;
+    --panel:#232321;
+    --line:#39382f;
+    --ink:#eeede7;
+    --ink2:#a6a59c;
+    --ink3:#75746c;
+    --series-1:#3987e5;
+    --series-2:#d95926;
+    --mark-one:#4a5a6e;
+    --mark-none:#333230;
+    --grid:#2a2a27;
+    --focus:#3987e5;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --surface:#1a1a19;
+  --panel:#232321;
+  --line:#39382f;
+  --ink:#eeede7;
+  --ink2:#a6a59c;
+  --ink3:#75746c;
+  --series-1:#3987e5;
+  --series-2:#d95926;
+  --mark-one:#4a5a6e;
+  --mark-none:#333230;
+  --grid:#2a2a27;
+  --focus:#3987e5;
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--surface);
+  color:var(--ink);
+  font-family:var(--font-ui);
+  font-size:15px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{
+  max-width:1180px;
+  margin:0 auto;
+  padding-left:max(16px,env(safe-area-inset-left,0px));
+  padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-block:28px 56px;
+  display:flex;
+  flex-direction:column;
+  gap:26px;
+}
+h1{
+  font-family:var(--font-display);
+  font-weight:600;
+  font-size:clamp(24px,3.4vw,32px);
+  letter-spacing:-0.012em;
+  margin:0;
+  text-wrap:balance;
+}
+.lede{margin:6px 0 0;color:var(--ink2);max-width:66ch;font-size:14.5px}
+h2{
+  font-family:var(--font-ui);
+  font-size:11.5px;
+  font-weight:600;
+  letter-spacing:.09em;
+  text-transform:uppercase;
+  color:var(--ink3);
+  margin:0 0 12px;
+}
+.panel{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:18px;
+  min-width:0;
+}
+
+/* ---- file loading ---- */
+.loadgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:720px){.loadgrid{grid-template-columns:1fr}}
+.drop{
+  border:1.5px dashed var(--line);
+  border-radius:9px;
+  background:var(--surface);
+  padding:16px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  min-width:0;
+  transition:border-color .13s,background .13s;
+}
+.drop.over{border-color:var(--focus);background:color-mix(in srgb,var(--focus) 7%,var(--surface))}
+.drop.loaded{border-style:solid}
+.drop .slot{
+  font-family:var(--font-data);font-size:11px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--ink3);
+}
+.drop .fname{
+  font-family:var(--font-data);font-size:12.5px;color:var(--ink);
+  word-break:break-all;line-height:1.35;
+}
+.drop .meta{font-size:12.5px;color:var(--ink2)}
+.drop .meta b{font-variant-numeric:tabular-nums;font-weight:500;color:var(--ink)}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{
+  font-family:var(--font-ui);font-size:13px;font-weight:500;
+  background:var(--surface);color:var(--ink);
+  border:1px solid var(--line);border-radius:7px;
+  padding:7px 13px;cursor:pointer;
+  transition:border-color .13s,background .13s;
+}
+button:hover{border-color:var(--ink3)}
+button.primary{background:var(--series-1);border-color:var(--series-1);color:#fff}
+button.primary:hover{filter:brightness(1.07)}
+button:disabled{opacity:.42;cursor:default}
+button:disabled:hover{border-color:var(--line)}
+:is(button,input,select,summary,[tabindex]):focus-visible{
+  outline:2px solid var(--focus);outline-offset:2px;
+}
+.cols{display:grid;grid-template-columns:auto 1fr;gap:5px 9px;align-items:center;font-size:12px}
+.cols label{color:var(--ink2);font-family:var(--font-data);font-size:11px}
+select,input[type=text],input[type=number]{
+  font-family:var(--font-data);font-size:12px;
+  background:var(--surface);color:var(--ink);
+  border:1px solid var(--line);border-radius:6px;padding:5px 7px;
+  min-width:0;width:100%;
+}
+
+/* ---- controls ---- */
+.ctlgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px}
+.ctl{display:flex;flex-direction:column;gap:5px;min-width:0}
+.ctl > span{font-size:11px;font-family:var(--font-data);letter-spacing:.05em;color:var(--ink3)}
+.ctl .hint{font-size:11.5px;color:var(--ink3);font-family:var(--font-ui);letter-spacing:0}
+
+/* ---- plot ---- */
+.plotwrap{margin:0;min-width:0}
+.plotscroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+svg.chart{display:block;width:100%;height:auto;min-width:520px}
+.plotnote{
+  margin:9px 2px 0;font-size:12.5px;color:var(--ink2);display:flex;
+  gap:14px;flex-wrap:wrap;align-items:baseline;
+}
+.badge{
+  display:inline-flex;align-items:center;gap:6px;font-size:12px;
+  font-family:var(--font-data);color:var(--ink2);
+}
+.badge i{width:10px;height:10px;border-radius:50%;display:inline-block;flex:none}
+
+/* ---- stats ---- */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(142px,1fr));gap:12px;margin-bottom:16px}
+.card{
+  background:var(--surface);border:1px solid var(--line);border-radius:9px;
+  padding:12px 13px;display:flex;flex-direction:column;gap:3px;min-width:0;
+}
+.card .k{font-size:10.5px;font-family:var(--font-data);letter-spacing:.06em;text-transform:uppercase;color:var(--ink3)}
+.card .v{font-size:25px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-0.02em;line-height:1.12}
+.card .s{font-size:11.5px;color:var(--ink2)}
+.card.accent .v{color:var(--series-1)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 10px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:500;color:var(--ink2);font-size:11px;font-family:var(--font-data);letter-spacing:.05em;text-transform:uppercase}
+td.n,th.n{font-variant-numeric:tabular-nums;text-align:right;padding-right:20px;white-space:nowrap}
+td.n{font-family:var(--font-data)}
+td.n sup{font-size:.78em}
+td.note{color:var(--ink2);white-space:normal}
+td.g{font-family:var(--font-data)}
+.tscroll{overflow-x:auto}
+tbody tr:last-child :is(td,th){border-bottom:none}
+.dirpill{
+  display:inline-block;font-family:var(--font-data);font-size:10.5px;
+  padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--ink2);
+}
+.dirpill.same{border-color:color-mix(in srgb,var(--series-1) 50%,var(--line));color:var(--series-1)}
+.dirpill.opp{border-color:color-mix(in srgb,var(--series-2) 50%,var(--line));color:var(--series-2)}
+
+.empty{color:var(--ink2);font-size:13.5px}
+footer{color:var(--ink3);font-size:12.5px;line-height:1.6;max-width:72ch}
+footer code{font-family:var(--font-data);font-size:11.5px;color:var(--ink2)}
+.msg{font-size:12.5px;color:var(--series-2);min-height:1.2em}
+.sronly{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+
+  <header>
+    <h1>Concordance Explorer</h1>
+    <p class="lede">Compare two DESeq2 contrasts. Drop in both result tables and the page computes the overlap, the directional concordance against a transcriptome-wide null, and the scatter — then exports the figure as SVG or PNG.</p>
+  </header>
+
+  <section class="panel">
+    <h2>Contrasts</h2>
+    <div class="loadgrid">
+      <div class="drop" id="dropA" data-slot="a">
+        <div class="slot">Contrast A · horizontal axis</div>
+        <div class="fname" id="fnameA">Example data (simulated)</div>
+        <div class="meta" id="metaA"></div>
+        <div class="btnrow">
+          <button type="button" data-pick="a">Choose file</button>
+          <input type="file" id="fileA" accept=".csv,.tsv,.txt" class="sronly">
+        </div>
+        <div class="cols" id="colsA" hidden></div>
+      </div>
+      <div class="drop" id="dropB" data-slot="b">
+        <div class="slot">Contrast B · vertical axis</div>
+        <div class="fname" id="fnameB">Example data (simulated)</div>
+        <div class="meta" id="metaB"></div>
+        <div class="btnrow">
+          <button type="button" data-pick="b">Choose file</button>
+          <input type="file" id="fileB" accept=".csv,.tsv,.txt" class="sronly">
+        </div>
+        <div class="cols" id="colsB" hidden></div>
+      </div>
+    </div>
+    <p class="msg" id="loadMsg"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Thresholds and labelling</h2>
+    <div class="ctlgrid">
+      <label class="ctl"><span>padj &lt;</span>
+        <input type="number" id="tPadj" value="0.05" min="0" max="1" step="0.005"></label>
+      <label class="ctl"><span>|log2FC| &gt;</span>
+        <input type="number" id="tLfc" value="0.5" min="0" step="0.1"></label>
+      <label class="ctl"><span>axis label A</span>
+        <input type="text" id="labA" value="contrast A — log2 fold change"></label>
+      <label class="ctl"><span>axis label B</span>
+        <input type="text" id="labB" value="contrast B — log2 fold change"></label>
+      <label class="ctl"><span>label genes</span>
+        <select id="labMode">
+          <option value="shared">shared genes</option>
+          <option value="highlight">highlighted genes</option>
+          <option value="both">shared + highlighted</option>
+          <option value="none">none</option>
+        </select></label>
+      <label class="ctl"><span>max labels</span>
+        <input type="number" id="labMax" value="40" min="0" max="120" step="5"></label>
+    </div>
+    <div class="ctl" style="margin-top:14px">
+      <span>highlight gene set</span>
+      <input type="text" id="hiGenes" placeholder="comma- or space-separated gene identifiers">
+      <span class="hint">Matched against the gene column, case-insensitively. Drawn in orange and reported separately.</span>
+    </div>
+  </section>
+
+  <figure class="plotwrap">
+    <div class="plotscroll"><svg class="chart" id="chart" role="img" aria-label="Concordance scatter of two contrasts"></svg></div>
+    <figcaption class="plotnote" id="legend"></figcaption>
+  </figure>
+
+  <section class="panel">
+    <h2>Overlap and concordance</h2>
+    <div class="cards" id="cards"></div>
+    <div class="tscroll"><table id="statTable"></table></div>
+    <div class="btnrow" style="margin-top:16px">
+      <button type="button" class="primary" id="expSvg">Export SVG</button>
+      <button type="button" id="expPng">Export PNG</button>
+      <button type="button" id="expCsv">Export shared genes</button>
+      <button type="button" id="expTxt">Export statistics</button>
+    </div>
+    <p class="msg" id="expMsg"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Genes significant in both contrasts</h2>
+    <div class="tscroll"><table id="geneTable"></table></div>
+  </section>
+
+  <footer id="methods"></footer>
+</div>
+
+<script>
+"use strict";
+/* ============================ statistics ============================ */
+function lgamma(x){
+  const g=7,C=[0.99999999999980993,676.5203681218851,-1259.1392167224028,
+    771.32342877765313,-176.61502916214059,12.507343278686905,
+    -0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];
+  if(x<0.5) return Math.log(Math.PI/Math.sin(Math.PI*x))-lgamma(1-x);
+  x-=1; let a=C[0]; const t=x+g+0.5;
+  for(let i=1;i<g+2;i++) a+=C[i]/(x+i);
+  return 0.5*Math.log(2*Math.PI)+(x+0.5)*Math.log(t)-t+Math.log(a);
+}
+const lnC=(n,k)=>(k<0||k>n||n<0)?-Infinity:lgamma(n+1)-lgamma(k+1)-lgamma(n-k+1);
+function logSumExp(a){
+  let m=-Infinity; for(const v of a) if(v>m) m=v;
+  if(!isFinite(m)) return 0;
+  let s=0; for(const v of a) s+=Math.exp(v-m);
+  return Math.exp(m)*s;
+}
+/* P(X >= k), X ~ Hypergeometric(N population, K successes, n draws) */
+function hyperSF(k,N,K,n){
+  const lo=Math.max(0,n+K-N), hi=Math.min(K,n);
+  if(k<=lo) return 1;
+  if(k>hi) return 0;
+  const t=[]; for(let i=k;i<=hi;i++) t.push(lnC(K,i)+lnC(N-K,n-i)-lnC(N,n));
+  return Math.min(1,logSumExp(t));
+}
+/* P(X >= k), X ~ Binomial(n, p) */
+function binomSF(k,n,p){
+  if(n<=0) return 1;
+  if(k<=0) return 1;
+  if(k>n) return 0;
+  if(p<=0) return k>0?0:1;
+  if(p>=1) return 1;
+  const lp=Math.log(p), lq=Math.log1p(-p), t=[];
+  for(let i=k;i<=n;i++) t.push(lnC(n,i)+i*lp+(n-i)*lq);
+  return Math.min(1,logSumExp(t));
+}
+function pearson(x,y){
+  const n=x.length; if(n<3) return NaN;
+  let sx=0,sy=0; for(let i=0;i<n;i++){sx+=x[i];sy+=y[i];}
+  const mx=sx/n,my=sy/n;
+  let a=0,b=0,c=0;
+  for(let i=0;i<n;i++){const u=x[i]-mx,v=y[i]-my;a+=u*v;b+=u*u;c+=v*v;}
+  return (b<=0||c<=0)?NaN:a/Math.sqrt(b*c);
+}
+function ranks(v){
+  const idx=v.map((x,i)=>i).sort((i,j)=>v[i]-v[j]);
+  const r=new Array(v.length);
+  let i=0;
+  while(i<idx.length){
+    let j=i; while(j+1<idx.length && v[idx[j+1]]===v[idx[i]]) j++;
+    const avg=(i+j)/2+1;
+    for(let k=i;k<=j;k++) r[idx[k]]=avg;
+    i=j+1;
+  }
+  return r;
+}
+const spearman=(x,y)=>pearson(ranks(x),ranks(y));
+
+/* ============================ parsing ============================ */
+function splitRows(text,delim){
+  const rows=[]; let row=[],cur="",q=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(q){
+      if(ch==='"'){ if(text[i+1]==='"'){cur+='"';i++;} else q=false; }
+      else cur+=ch;
+    } else if(ch==='"'){ q=true; }
+    else if(ch===delim){ row.push(cur); cur=""; }
+    else if(ch==='\n'){ row.push(cur); rows.push(row); row=[]; cur=""; }
+    else if(ch==='\r'){ /* skip */ }
+    else cur+=ch;
+  }
+  if(cur.length||row.length){ row.push(cur); rows.push(row); }
+  return rows;
+}
+const CAND={
+  gene:["gene","genes","gene_id","geneid","id","symbol","gene_symbol","gene_name","name","row","rowname","rownames","x",""],
+  lfc:["log2foldchange","log2fc","log2_fold_change","logfc","lfc","log2fold","log2foldchange_shrunk"],
+  padj:["padj","fdr","adj.p.val","adj_p_val","adjp","p_adj","padjust","qvalue","q_value","qval","svalue"],
+  pval:["pvalue","p_value","p.value","pval","p"],
+  base:["basemean","base_mean","aveexpr","meanexpr","mean_expression"],
+  stat:["stat","statistic","wald","t","z"]
+};
+function detect(header,key){
+  const low=header.map(h=>h.trim().toLowerCase());
+  for(const want of CAND[key]){
+    const i=low.indexOf(want);
+    if(i>=0) return i;
+  }
+  return -1;
+}
+function parseTable(text,name){
+  const firstNl=text.indexOf("\n");
+  const head=text.slice(0,firstNl<0?text.length:firstNl);
+  const delim=(head.split("\t").length>head.split(",").length)?"\t":",";
+  const rows=splitRows(text,delim).filter(r=>r.length>1||((r[0]||"").trim()!==""));
+  if(rows.length<2) throw new Error("no data rows found in "+name);
+  const header=rows[0].map(h=>h.trim());
+  const map={
+    gene:detect(header,"gene"),
+    lfc:detect(header,"lfc"),
+    padj:detect(header,"padj"),
+    pval:detect(header,"pval"),
+    base:detect(header,"base"),
+    stat:detect(header,"stat")
+  };
+  if(map.gene<0) map.gene=0;
+  if(map.lfc<0) throw new Error("no log2 fold-change column in "+name+" — expected one named log2FoldChange");
+  if(map.padj<0) throw new Error("no adjusted p-value column in "+name+" — expected one named padj");
+  return {name,header,map,rows:rows.slice(1)};
+}
+function buildIndex(tbl){
+  const m=new Map(), {map,rows}=tbl;
+  const num=v=>{
+    if(v==null) return NaN;
+    const s=v.trim();
+    if(s===""||s==="NA"||s==="NaN"||s==="null"||s==="None") return NaN;
+    const f=Number(s); return Number.isFinite(f)?f:NaN;
+  };
+  for(const r of rows){
+    const g=(r[map.gene]||"").trim();
+    if(!g) continue;
+    const lfc=num(r[map.lfc]), padj=num(r[map.padj]);
+    m.set(g,{
+      gene:g, lfc, padj,
+      pval:map.pval>=0?num(r[map.pval]):NaN,
+      base:map.base>=0?num(r[map.base]):NaN,
+      stat:map.stat>=0?num(r[map.stat]):NaN
+    });
+  }
+  return m;
+}
+
+/* ============================ example data ============================ */
+function demo(){
+  let s=20261102;
+  const rnd=()=>{ s^=s<<13;s>>>=0;s^=s>>17;s^=s<<5;s>>>=0; return s/4294967296; };
+  const norm=()=>{
+    let u=0,v=0; while(u===0)u=rnd(); while(v===0)v=rnd();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+  };
+  const N=2600, recs=[];
+  for(let i=0;i<N;i++){
+    const g="SIM"+String(i+1).padStart(4,"0");
+    const base=Math.exp(norm()*1.3+6.4);
+    const se=0.10+1.6/Math.sqrt(base);
+    let a=norm()*0.16, b=norm()*0.16;
+    if(i<26){ const shared=(i%5===0?1:-1)*(0.9+rnd()*1.9); a=shared+norm()*0.15; b=shared*(0.75+rnd()*0.4)+norm()*0.15; }
+    else if(i<62){ a=(rnd()<0.5?1:-1)*(0.9+rnd()*2.3)+norm()*0.13; b=norm()*0.18; }
+    else if(i<84){ b=(rnd()<0.5?1:-1)*(0.9+rnd()*1.6)+norm()*0.13; a=norm()*0.18; }
+    const za=a/se, zb=b/se;
+    recs.push({g,base,a,b,za,zb,pa:2*(1-normCdf(Math.abs(za))),pb:2*(1-normCdf(Math.abs(zb)))});
+  }
+  const bh=(key)=>{
+    const ord=recs.map((r,i)=>i).sort((i,j)=>recs[i][key]-recs[j][key]);
+    const adj=new Array(N);
+    let prev=1;
+    for(let k=N-1;k>=0;k--){
+      const i=ord[k];
+      prev=Math.min(prev,recs[i][key]*N/(k+1));
+      adj[i]=Math.min(1,prev);
+    }
+    return adj;
+  };
+  const qa=bh("pa"), qb=bh("pb");
+  const A=new Map(), B=new Map();
+  recs.forEach((r,i)=>{
+    A.set(r.g,{gene:r.g,lfc:r.a,padj:qa[i],pval:r.pa,base:r.base,stat:r.za});
+    B.set(r.g,{gene:r.g,lfc:r.b,padj:qb[i],pval:r.pb,base:r.base,stat:r.zb});
+  });
+  return {A,B};
+}
+function normCdf(z){
+  const t=1/(1+0.2316419*Math.abs(z));
+  const d=0.3989423*Math.exp(-z*z/2);
+  const p=d*t*(0.3193815+t*(-0.3565638+t*(1.781478+t*(-1.821256+t*1.330274))));
+  return z>0?1-p:p;
+}
+
+/* ============================ analysis ============================ */
+const S={A:null,B:null,nameA:"Example data (simulated)",nameB:"Example data (simulated)",
+         tblA:null,tblB:null,result:null,demo:true};
+
+function analyse(){
+  const tPadj=Math.max(0,Math.min(1,Number(document.getElementById("tPadj").value)||0.05));
+  const tLfc=Math.max(0,Number(document.getElementById("tLfc").value)||0);
+  const hiRaw=document.getElementById("hiGenes").value.split(/[\s,;]+/).map(s=>s.trim()).filter(Boolean);
+  const hiSet=new Set(hiRaw.map(s=>s.toUpperCase()));
+
+  const pts=[];
+  for(const [g,a] of S.A){
+    const b=S.B.get(g);
+    if(!b) continue;
+    if(!Number.isFinite(a.lfc)||!Number.isFinite(b.lfc)) continue;
+    if(!Number.isFinite(a.padj)||!Number.isFinite(b.padj)) continue;
+    const sa=a.padj<tPadj&&Math.abs(a.lfc)>tLfc;
+    const sb=b.padj<tPadj&&Math.abs(b.lfc)>tLfc;
+    pts.push({g,ax:a.lfc,ay:b.lfc,pa:a.padj,pb:b.padj,ba:a.base,bb:b.base,
+              sa,sb,hi:hiSet.has(g.toUpperCase()),
+              same:Math.sign(a.lfc)===Math.sign(b.lfc)});
+  }
+  const N=pts.length;
+  const degA=pts.filter(p=>p.sa), degB=pts.filter(p=>p.sb);
+  const both=pts.filter(p=>p.sa&&p.sb);
+  const A=degA.length,B=degB.length,K=both.length;
+  const exp=N>0?A*B/N:0;
+  const fold=exp>0?K/exp:NaN;
+  const pHyper=(N>0&&A>0&&B>0)?hyperSF(K,N,A,B):NaN;
+
+  const q={uu:0,dd:0,ud:0,du:0};
+  for(const p of both){
+    if(p.ax>0&&p.ay>0) q.uu++;
+    else if(p.ax<0&&p.ay<0) q.dd++;
+    else if(p.ax>0&&p.ay<0) q.ud++;
+    else if(p.ax<0&&p.ay>0) q.du++;
+  }
+  const conc=q.uu+q.dd;
+  const null0=N>0?pts.filter(p=>p.same).length/N:0.5;
+  const pConc=K>0?binomSF(conc,K,null0):NaN;
+
+  const agreeA=degA.filter(p=>p.same).length;
+  const agreeB=degB.filter(p=>p.same).length;
+  const pA=A>0?binomSF(agreeA,A,null0):NaN;
+  const pB=B>0?binomSF(agreeB,B,null0):NaN;
+
+  const cor=(arr)=>arr.length>2
+    ?{r:pearson(arr.map(p=>p.ax),arr.map(p=>p.ay)),rho:spearman(arr.map(p=>p.ax),arr.map(p=>p.ay))}
+    :{r:NaN,rho:NaN};
+
+  const hiPts=pts.filter(p=>p.hi);
+  S.result={pts,N,A,B,K,exp,fold,pHyper,q,conc,null0,pConc,
+            agreeA,agreeB,pA,pB,degA,degB,both,hiPts,hiRaw,tPadj,tLfc,
+            corAll:cor(pts),corA:cor(degA),corB:cor(degB),corK:cor(both),
+            upA:degA.filter(p=>p.ax>0).length,upB:degB.filter(p=>p.ay>0).length};
+  return S.result;
+}
+
+/* ============================ formatting ============================ */
+const fmtP=p=>{
+  if(!Number.isFinite(p)) return "—";
+  if(p===0) return "&lt; 10<sup>-300</sup>";
+  if(p>=0.001) return p.toFixed(3);
+  const e=p.toExponential(1).split("e");
+  return e[0]+" × 10<sup>"+Number(e[1])+"</sup>";
+};
+/* adjusted p-value for a table cell; DESeq2 can return a true zero */
+const fmtQ=q=>{
+  if(!Number.isFinite(q)) return "—";
+  if(q===0) return "&lt;1e-300";
+  return q<0.001?q.toExponential(1):q.toFixed(3);
+};
+const fmtPct=(x)=>Number.isFinite(x)?(100*x).toFixed(1)+"%":"—";
+const fmtN=(x,d=2)=>Number.isFinite(x)?x.toFixed(d):"—";
+const int=(x)=>Number.isFinite(x)?x.toLocaleString("en-US"):"—";
+
+/* ============================ chart ============================ */
+const NS="http://www.w3.org/2000/svg";
+const el=(t,a)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);return n;};
+function quantile(sorted,p){
+  if(!sorted.length) return 0;
+  const i=(sorted.length-1)*p, lo=Math.floor(i), hi=Math.ceil(i);
+  return sorted[lo]+(sorted[hi]-sorted[lo])*(i-lo);
+}
+function niceTicks(lo,hi,target){
+  const span=hi-lo; if(!(span>0)) return [lo];
+  const raw=span/target, mag=Math.pow(10,Math.floor(Math.log10(raw)));
+  const norm=raw/mag;
+  const step=(norm<1.5?1:norm<3?2:norm<7?5:10)*mag;
+  const out=[];
+  for(let v=Math.ceil(lo/step)*step;v<=hi+1e-9;v+=step) out.push(Math.abs(v)<1e-9?0:v);
+  return out;
+}
+function cssVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+
+function draw(){
+  const R=S.result, svg=document.getElementById("chart");
+  svg.textContent="";
+  const W=880,H=760,M={t:34,r:26,b:66,l:74};
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.setAttribute("width",W); svg.setAttribute("height",H);
+
+  const C={surface:cssVar("--surface"),ink:cssVar("--ink"),ink2:cssVar("--ink2"),
+           ink3:cssVar("--ink3"),grid:cssVar("--grid"),line:cssVar("--line"),
+           s1:cssVar("--series-1"),s2:cssVar("--series-2"),
+           one:cssVar("--mark-one"),none:cssVar("--mark-none")};
+  svg.appendChild(el("rect",{x:0,y:0,width:W,height:H,fill:C.surface}));
+
+  const pts=R.pts;
+  if(!pts.length){
+    const t=el("text",{x:W/2,y:H/2,"text-anchor":"middle",fill:C.ink3,
+      "font-family":"IBM Plex Sans, sans-serif","font-size":15});
+    t.textContent="No genes are present in both tables.";
+    svg.appendChild(t); return;
+  }
+  const xs=pts.map(p=>p.ax).sort((a,b)=>a-b);
+  const ys=pts.map(p=>p.ay).sort((a,b)=>a-b);
+  const marked=pts.filter(p=>p.sa||p.sb||p.hi);
+  const rng=(sorted,vals)=>{
+    let lo=quantile(sorted,0.002), hi=quantile(sorted,0.998);
+    for(const v of vals){ if(v<lo) lo=v; if(v>hi) hi=v; }
+    const pad=(hi-lo)*0.07||1;
+    return [lo-pad,hi+pad];
+  };
+  let [xlo,xhi]=rng(xs,marked.map(p=>p.ax));
+  let [ylo,yhi]=rng(ys,marked.map(p=>p.ay));
+
+  const PW=W-M.l-M.r, PH=H-M.t-M.b;
+  const sx=v=>M.l+(v-xlo)/(xhi-xlo)*PW;
+  const sy=v=>M.t+(yhi-v)/(yhi-ylo)*PH;
+  const clipId="plotclip";
+  const defs=el("defs",{});
+  const cp=el("clipPath",{id:clipId});
+  cp.appendChild(el("rect",{x:M.l,y:M.t,width:PW,height:PH}));
+  defs.appendChild(cp); svg.appendChild(defs);
+
+  /* grid + ticks */
+  const gx=niceTicks(xlo,xhi,7), gy=niceTicks(ylo,yhi,7);
+  const gGrid=el("g",{});
+  for(const v of gx) gGrid.appendChild(el("line",{x1:sx(v),y1:M.t,x2:sx(v),y2:M.t+PH,stroke:C.grid,"stroke-width":1}));
+  for(const v of gy) gGrid.appendChild(el("line",{x1:M.l,y1:sy(v),x2:M.l+PW,y2:sy(v),stroke:C.grid,"stroke-width":1}));
+  svg.appendChild(gGrid);
+
+  const gRef=el("g",{"clip-path":`url(#${clipId})`});
+  gRef.appendChild(el("line",{x1:M.l,y1:sy(0),x2:M.l+PW,y2:sy(0),stroke:C.line,"stroke-width":1.4}));
+  gRef.appendChild(el("line",{x1:sx(0),y1:M.t,x2:sx(0),y2:M.t+PH,stroke:C.line,"stroke-width":1.4}));
+  const d0=Math.max(xlo,ylo), d1=Math.min(xhi,yhi);
+  if(d1>d0) gRef.appendChild(el("line",{x1:sx(d0),y1:sy(d0),x2:sx(d1),y2:sy(d1),
+    stroke:C.line,"stroke-width":1.2,"stroke-dasharray":"5 5"}));
+  svg.appendChild(gRef);
+
+  /* background layer: one path of tiny squares, no hit testing */
+  let dBg="",dOne="";
+  for(const p of pts){
+    if(p.sa||p.sb||p.hi) continue;
+    const x=sx(p.ax),y=sy(p.ay);
+    if(x<M.l||x>M.l+PW||y<M.t||y>M.t+PH) continue;
+    dBg+=`M${x.toFixed(1)} ${y.toFixed(1)}h1.7v1.7h-1.7z`;
+  }
+  svg.appendChild(el("path",{d:dBg,fill:C.none,"pointer-events":"none"}));
+
+  const gOne=el("g",{"clip-path":`url(#${clipId})`});
+  for(const p of pts){
+    if(p.hi||(p.sa&&p.sb)||!(p.sa||p.sb)) continue;
+    gOne.appendChild(el("circle",{cx:sx(p.ax).toFixed(1),cy:sy(p.ay).toFixed(1),r:3.1,
+      fill:C.one,"data-g":p.g}));
+  }
+  svg.appendChild(gOne);
+
+  const gHi=el("g",{"clip-path":`url(#${clipId})`});
+  for(const p of pts){
+    if(!p.hi) continue;
+    gHi.appendChild(el("circle",{cx:sx(p.ax).toFixed(1),cy:sy(p.ay).toFixed(1),r:5.2,
+      fill:C.s2,stroke:C.surface,"stroke-width":1.3,"data-g":p.g}));
+  }
+  svg.appendChild(gHi);
+
+  const gBoth=el("g",{"clip-path":`url(#${clipId})`});
+  for(const p of pts){
+    if(!(p.sa&&p.sb)||p.hi) continue;
+    gBoth.appendChild(el("circle",{cx:sx(p.ax).toFixed(1),cy:sy(p.ay).toFixed(1),r:5.4,
+      fill:C.s1,stroke:C.surface,"stroke-width":1.3,"data-g":p.g}));
+  }
+  svg.appendChild(gBoth);
+
+  /* quadrant counts for the shared set */
+  const qg=el("g",{});
+  const qtext=(t,x,y)=>{
+    const n=el("text",{x,y,"text-anchor":"middle",fill:C.ink3,
+      "font-family":"IBM Plex Mono, monospace","font-size":11.5});
+    n.textContent=t; qg.appendChild(n);
+  };
+  const QBAND=15;               /* rows the quadrant counts occupy, kept clear of labels */
+  if(R.K>0){
+    qtext(`both up · ${R.q.uu}`,M.l+PW-62,M.t+13);
+    qtext(`both down · ${R.q.dd}`,M.l+68,M.t+PH-7);
+    if(R.q.ud) qtext(`A up / B down · ${R.q.ud}`,M.l+PW-86,M.t+PH-7);
+    if(R.q.du) qtext(`A down / B up · ${R.q.du}`,M.l+86,M.t+13);
+  }
+  svg.appendChild(qg);
+
+  /* labels */
+  const mode=document.getElementById("labMode").value;
+  const cap=Math.max(0,Math.min(120,Number(document.getElementById("labMax").value)||0));
+  let cand=[];
+  if(mode==="shared") cand=pts.filter(p=>p.sa&&p.sb);
+  else if(mode==="highlight") cand=pts.filter(p=>p.hi);
+  else if(mode==="both") cand=pts.filter(p=>(p.sa&&p.sb)||p.hi);
+  cand=cand.slice().sort((a,b)=>Math.hypot(b.ax,b.ay)-Math.hypot(a.ax,a.ay)).slice(0,cap);
+
+  if(cand.length){
+    const anchors=cand.map(p=>[sx(p.ax),sy(p.ay)]);
+    const tx=anchors.map(a=>[a[0],a[1]-17]);
+    const LSEP=34,PSEP=15,CAP=52;
+    const allM=pts.filter(p=>p.sa||p.sb||p.hi).map(p=>[sx(p.ax),sy(p.ay)]);
+    for(let it=0;it<420;it++){
+      for(let i=0;i<tx.length;i++)for(let j=i+1;j<tx.length;j++){
+        let dx=tx[i][0]-tx[j][0],dy=tx[i][1]-tx[j][1];
+        let d=Math.hypot(dx,dy);
+        if(d<1e-6){dx=(Math.random()-0.5);dy=(Math.random()-0.5);d=Math.hypot(dx,dy);}
+        if(d<LSEP){const k=(LSEP-d)/2/d;tx[i][0]+=dx*k;tx[i][1]+=dy*k;tx[j][0]-=dx*k;tx[j][1]-=dy*k;}
+      }
+      for(let i=0;i<tx.length;i++){
+        for(const m of allM){
+          if(Math.abs(m[0]-anchors[i][0])<1e-6&&Math.abs(m[1]-anchors[i][1])<1e-6) continue;
+          const dx=tx[i][0]-m[0],dy=tx[i][1]-m[1],d=Math.hypot(dx,dy);
+          if(d>1e-6&&d<PSEP){const k=(PSEP-d)/d;tx[i][0]+=dx*k;tx[i][1]+=dy*k;}
+        }
+        const dx=tx[i][0]-anchors[i][0],dy=tx[i][1]-anchors[i][1],d=Math.hypot(dx,dy);
+        if(d>CAP){tx[i][0]=anchors[i][0]+dx/d*CAP;tx[i][1]=anchors[i][1]+dy/d*CAP;}
+        tx[i][0]=Math.min(Math.max(tx[i][0],M.l+26),M.l+PW-26);
+        tx[i][1]=Math.min(Math.max(tx[i][1],M.t+QBAND+11),M.t+PH-QBAND-9);
+      }
+    }
+    const gl=el("g",{});
+    cand.forEach((p,i)=>{
+      gl.appendChild(el("line",{x1:anchors[i][0].toFixed(1),y1:anchors[i][1].toFixed(1),
+        x2:tx[i][0].toFixed(1),y2:tx[i][1].toFixed(1),stroke:C.line,"stroke-width":0.9}));
+    });
+    cand.forEach((p,i)=>{
+      const t=el("text",{x:tx[i][0].toFixed(1),y:(tx[i][1]+3.6).toFixed(1),"text-anchor":"middle",
+        fill:C.ink,"font-family":"IBM Plex Mono, monospace","font-size":10.5,
+        stroke:C.surface,"stroke-width":3.2,"paint-order":"stroke fill"});
+      t.textContent=p.g;
+      gl.appendChild(t);
+    });
+    svg.appendChild(gl);
+  }
+
+  /* axes */
+  const ga=el("g",{});
+  for(const v of gx){
+    const t=el("text",{x:sx(v),y:M.t+PH+20,"text-anchor":"middle",fill:C.ink2,
+      "font-family":"IBM Plex Mono, monospace","font-size":11});
+    t.textContent=String(Math.round(v*100)/100); ga.appendChild(t);
+  }
+  for(const v of gy){
+    const t=el("text",{x:M.l-11,y:sy(v)+3.8,"text-anchor":"end",fill:C.ink2,
+      "font-family":"IBM Plex Mono, monospace","font-size":11});
+    t.textContent=String(Math.round(v*100)/100); ga.appendChild(t);
+  }
+  const xl=el("text",{x:M.l+PW/2,y:H-24,"text-anchor":"middle",fill:C.ink2,
+    "font-family":"IBM Plex Sans, sans-serif","font-size":13});
+  xl.textContent=document.getElementById("labA").value||"contrast A";
+  ga.appendChild(xl);
+  const yl=el("text",{x:20,y:M.t+PH/2,"text-anchor":"middle",fill:C.ink2,
+    "font-family":"IBM Plex Sans, sans-serif","font-size":13,
+    transform:`rotate(-90 20 ${M.t+PH/2})`});
+  yl.textContent=document.getElementById("labB").value||"contrast B";
+  ga.appendChild(yl);
+  svg.appendChild(ga);
+
+  const hd=el("text",{x:M.l,y:20,fill:C.ink3,
+    "font-family":"IBM Plex Mono, monospace","font-size":11});
+  hd.textContent=`${int(R.N)} genes tested in both · ${int(R.K)} shared · ${fmtPct(R.K?R.conc/R.K:NaN)} concordant`
+    +(S.demo?"  ·  EXAMPLE DATA (SIMULATED)":"");
+  svg.appendChild(hd);
+
+  attachHover(svg);
+}
+
+function attachHover(svg){
+  let tip=null;
+  const show=(c)=>{
+    const g=c.getAttribute("data-g");
+    const p=S.result.pts.find(q=>q.g===g); if(!p) return;
+    hide();
+    tip=el("g",{"pointer-events":"none"});
+    const lines=[g,
+      `A  ${p.ax>=0?"+":""}${p.ax.toFixed(2)}   padj ${p.pa<0.001?p.pa.toExponential(1):p.pa.toFixed(3)}`,
+      `B  ${p.ay>=0?"+":""}${p.ay.toFixed(2)}   padj ${p.pb<0.001?p.pb.toExponential(1):p.pb.toFixed(3)}`];
+    const w=Math.max(...lines.map(l=>l.length))*6.3+16, h=lines.length*14+12;
+    const cx=Number(c.getAttribute("cx")), cy=Number(c.getAttribute("cy"));
+    let x=cx+12,y=cy-h-10;
+    if(x+w>880) x=cx-w-12;
+    if(y<4) y=cy+14;
+    tip.appendChild(el("rect",{x,y,width:w,height:h,rx:5,
+      fill:cssVar("--panel"),stroke:cssVar("--line"),"stroke-width":1}));
+    lines.forEach((l,i)=>{
+      const t=el("text",{x:x+8,y:y+18+i*14,fill:i===0?cssVar("--ink"):cssVar("--ink2"),
+        "font-family":"IBM Plex Mono, monospace","font-size":11});
+      t.textContent=l; tip.appendChild(t);
+    });
+    svg.appendChild(tip);
+  };
+  const hide=()=>{ if(tip&&tip.parentNode) tip.remove(); tip=null; };
+  svg.addEventListener("mouseover",e=>{ if(e.target.tagName==="circle") show(e.target); });
+  svg.addEventListener("mouseout",e=>{ if(e.target.tagName==="circle") hide(); });
+  svg.addEventListener("mouseleave",hide);
+}
+
+/* ============================ readouts ============================ */
+function renderStats(){
+  const R=S.result;
+  const cards=document.getElementById("cards");
+  const c=[
+    {k:"shared DEGs",v:int(R.K),s:`of ${int(R.A)} and ${int(R.B)}`,a:true},
+    {k:"fold enrichment",v:Number.isFinite(R.fold)?R.fold.toFixed(1)+"×":"—",s:`${fmtN(R.exp,1)} expected`},
+    {k:"concordant",v:R.K?fmtPct(R.conc/R.K):"—",s:`${R.conc} of ${R.K} same direction`},
+    {k:"overlap p",v:fmtP(R.pHyper),s:"hypergeometric"}
+  ];
+  cards.innerHTML=c.map(x=>
+    `<div class="card${x.a?" accent":""}"><span class="k">${x.k}</span>`+
+    `<span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
+
+  const rows=[
+    ["Genes tested in both contrasts",int(R.N),""],
+    ["Differentially expressed, contrast A",int(R.A),`${R.upA} up / ${R.A-R.upA} down`],
+    ["Differentially expressed, contrast B",int(R.B),`${R.upB} up / ${R.B-R.upB} down`],
+    ["Significant in both",int(R.K),`${fmtN(R.exp,2)} expected by chance`],
+    ["Direction of the shared genes",`${R.conc} / ${R.K}`,
+      `A up B up ${R.q.uu} · A down B down ${R.q.dd} · A up B down ${R.q.ud} · A down B up ${R.q.du}`],
+    ["Transcriptome-wide sign agreement",fmtPct(R.null0),"the null concordance rate"],
+    ["Concordance vs that null",fmtP(R.pConc),"one-sided binomial"],
+    ["Sign agreement among A's DEGs",`${R.agreeA} / ${R.A} (${fmtPct(R.A?R.agreeA/R.A:NaN)})`,`p = ${fmtP(R.pA)}`],
+    ["Sign agreement among B's DEGs",`${R.agreeB} / ${R.B} (${fmtPct(R.B?R.agreeB/R.B:NaN)})`,`p = ${fmtP(R.pB)}`],
+    ["Pearson r, all tested genes",fmtN(R.corAll.r,3),`Spearman ρ ${fmtN(R.corAll.rho,3)}`],
+    ["Pearson r, among A's DEGs",fmtN(R.corA.r,3),`Spearman ρ ${fmtN(R.corA.rho,3)}`],
+    ["Pearson r, among B's DEGs",fmtN(R.corB.r,3),`Spearman ρ ${fmtN(R.corB.rho,3)}`],
+    ["Pearson r, among the shared genes",fmtN(R.corK.r,3),`Spearman ρ ${fmtN(R.corK.rho,3)}`]
+  ];
+  if(R.hiRaw.length){
+    const hs=R.hiPts.filter(p=>p.sa&&p.sb).length;
+    rows.push(["Highlighted gene set",`${R.hiPts.length} / ${R.hiRaw.length} found`,
+      `${R.hiPts.filter(p=>p.sa).length} DE in A · ${R.hiPts.filter(p=>p.sb).length} DE in B · ${hs} in both`]);
+  }
+  document.getElementById("statTable").innerHTML=
+    `<thead><tr><th>Quantity</th><th class="n">Value</th><th>Note</th></tr></thead><tbody>`+
+    rows.map(r=>`<tr><td>${r[0]}</td><td class="n">${r[1]}</td><td class="note">${r[2]}</td></tr>`).join("")+
+    "</tbody>";
+
+  const gt=document.getElementById("geneTable");
+  if(!R.K){
+    gt.innerHTML=`<tbody><tr><td class="empty">No gene passes the thresholds in both contrasts.</td></tr></tbody>`;
+  }else{
+    const sorted=R.both.slice().sort((a,b)=>a.ax-b.ax);
+    gt.innerHTML=`<thead><tr><th>Gene</th><th>Direction</th><th class="n">log2FC A</th>`+
+      `<th class="n">padj A</th><th class="n">log2FC B</th><th class="n">padj B</th></tr></thead><tbody>`+
+      sorted.map(p=>`<tr><td class="g">${p.g}</td>`+
+        `<td><span class="dirpill ${p.same?"same":"opp"}">${p.same?"same":"opposite"}</span></td>`+
+        `<td class="n">${p.ax>=0?"+":""}${p.ax.toFixed(2)}</td>`+
+        `<td class="n">${fmtQ(p.pa)}</td>`+
+        `<td class="n">${p.ay>=0?"+":""}${p.ay.toFixed(2)}</td>`+
+        `<td class="n">${fmtQ(p.pb)}</td></tr>`).join("")+
+      "</tbody>";
+  }
+
+  document.getElementById("legend").innerHTML=
+    `<span class="badge"><i style="background:var(--series-1)"></i>significant in both (${R.K})</span>`+
+    (R.hiPts.length?`<span class="badge"><i style="background:var(--series-2)"></i>highlighted (${R.hiPts.length})</span>`:"")+
+    `<span class="badge"><i style="background:var(--mark-one)"></i>significant in one (${R.A+R.B-2*R.K})</span>`+
+    `<span class="badge"><i style="background:var(--mark-none)"></i>not significant (${R.N-R.A-R.B+R.K})</span>`;
+
+  document.getElementById("methods").innerHTML=
+    `A gene counts as differentially expressed when <code>padj &lt; ${R.tPadj}</code> and `+
+    `<code>|log2FoldChange| &gt; ${R.tLfc}</code> in that contrast. The universe is every gene with a `+
+    `non-missing adjusted p-value and fold change in <em>both</em> tables, so the overlap is not inflated by `+
+    `genes only one analysis tested. Overlap significance is the one-sided hypergeometric test. `+
+    `Concordance is tested against the sign agreement rate across that whole universe `+
+    `(${fmtPct(R.null0)} here), not against 50% — two contrasts that share a reference sample or a `+
+    `direction of effect already agree more often than chance, and the genome-wide rate absorbs that.`;
+}
+
+/* ============================ export ============================ */
+function serialiseSvg(){
+  const svg=document.getElementById("chart").cloneNode(true);
+  svg.setAttribute("xmlns",NS);
+  const style=document.createElementNS(NS,"style");
+  style.textContent="text{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}";
+  svg.insertBefore(style,svg.firstChild);
+  return '<?xml version="1.0" encoding="UTF-8"?>\n'+new XMLSerializer().serializeToString(svg);
+}
+/* Ordinary web hosting (GitHub Pages, a lab server, a local file) has no Claude
+   runtime, so fall back to a plain download there. Inside a claude.ai artifact the
+   sandbox makes that inert and the downloads capability does the saving instead. */
+function nativeSave(filename,data){
+  const blob=data instanceof Blob?data:new Blob([data],{type:"application/octet-stream"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download=filename; a.style.display="none";
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{a.remove();URL.revokeObjectURL(url);},0);
+}
+async function saveFile(filename,data){
+  const msg=document.getElementById("expMsg");
+  let dl=null;
+  try{ dl=await window.claude?.use?.("downloads"); }catch(e){ dl=null; }
+  if(dl){
+    try{
+      await dl.save({filename,data});
+      msg.textContent="Saved "+filename+".";
+    }catch(err){
+      const code=err&&err.code;
+      msg.textContent=code==="declined"?"Save cancelled."
+        :code==="too_large"?"That file is too large to save here."
+        :"Could not save the file"+(code?" ("+code+")":"")+".";
+    }
+    return;
+  }
+  try{
+    nativeSave(filename,data);
+    msg.textContent="Saved "+filename+".";
+  }catch(e){
+    msg.textContent="Could not save the file.";
+  }
+}
+function statsText(){
+  const R=S.result;
+  const L=[];
+  L.push("CONCORDANCE BETWEEN TWO CONTRASTS");
+  L.push("A: "+S.nameA);
+  L.push("B: "+S.nameB);
+  L.push("");
+  L.push(`DEG rule: padj < ${R.tPadj} and |log2FC| > ${R.tLfc}`);
+  L.push(`Universe (tested in both): ${R.N}`);
+  L.push(`DEGs in A: ${R.A} (${R.upA} up / ${R.A-R.upA} down)`);
+  L.push(`DEGs in B: ${R.B} (${R.upB} up / ${R.B-R.upB} down)`);
+  L.push("");
+  L.push(`Overlap: ${R.K}   expected ${R.exp.toFixed(2)}   fold ${Number.isFinite(R.fold)?R.fold.toFixed(2):"NA"}`);
+  L.push(`Hypergeometric p = ${Number.isFinite(R.pHyper)?R.pHyper.toExponential(3):"NA"}`);
+  L.push("");
+  L.push(`Concordant: ${R.conc} of ${R.K} (${(100*(R.K?R.conc/R.K:0)).toFixed(1)}%)`);
+  L.push(`  A up / B up      ${R.q.uu}`);
+  L.push(`  A down / B down  ${R.q.dd}`);
+  L.push(`  A up / B down    ${R.q.ud}`);
+  L.push(`  A down / B up    ${R.q.du}`);
+  L.push(`Genome-wide sign agreement (null): ${(100*R.null0).toFixed(1)}%`);
+  L.push(`Binomial p vs that null: ${Number.isFinite(R.pConc)?R.pConc.toExponential(3):"NA"}`);
+  L.push("");
+  L.push(`Sign agreement among A's DEGs: ${R.agreeA}/${R.A} (${(100*(R.A?R.agreeA/R.A:0)).toFixed(1)}%)  p = ${Number.isFinite(R.pA)?R.pA.toExponential(3):"NA"}`);
+  L.push(`Sign agreement among B's DEGs: ${R.agreeB}/${R.B} (${(100*(R.B?R.agreeB/R.B:0)).toFixed(1)}%)  p = ${Number.isFinite(R.pB)?R.pB.toExponential(3):"NA"}`);
+  L.push("");
+  L.push(`Pearson r / Spearman rho`);
+  L.push(`  all tested genes   ${fmtN(R.corAll.r,3)} / ${fmtN(R.corAll.rho,3)}`);
+  L.push(`  among A's DEGs     ${fmtN(R.corA.r,3)} / ${fmtN(R.corA.rho,3)}`);
+  L.push(`  among B's DEGs     ${fmtN(R.corB.r,3)} / ${fmtN(R.corB.rho,3)}`);
+  L.push(`  among shared genes ${fmtN(R.corK.r,3)} / ${fmtN(R.corK.rho,3)}`);
+  if(S.demo){ L.push(""); L.push("NOTE: these numbers come from the page's simulated example data."); }
+  return L.join("\n");
+}
+function sharedCsv(){
+  const R=S.result;
+  const esc=v=>/[",\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':String(v);
+  const head=["gene","direction","log2FC_A","padj_A","baseMean_A","log2FC_B","padj_B","baseMean_B"];
+  const body=R.both.slice().sort((a,b)=>a.ax-b.ax).map(p=>
+    [p.g,p.same?"same":"opposite",p.ax,p.pa,p.ba,p.ay,p.pb,p.bb].map(esc).join(","));
+  return head.join(",")+"\n"+body.join("\n")+"\n";
+}
+
+/* ============================ wiring ============================ */
+function refresh(){
+  try{
+    analyse(); draw(); renderStats();
+    document.getElementById("loadMsg").textContent="";
+  }catch(err){
+    document.getElementById("loadMsg").textContent=err.message||String(err);
+  }
+}
+function columnUi(slot){
+  const tbl=slot==="a"?S.tblA:S.tblB;
+  const box=document.getElementById("cols"+slot.toUpperCase());
+  if(!tbl){ box.hidden=true; return; }
+  box.hidden=false;
+  const keys=[["gene","gene"],["lfc","log2FC"],["padj","padj"]];
+  box.innerHTML=keys.map(([k,lab])=>
+    `<label for="sel-${slot}-${k}">${lab}</label>`+
+    `<select id="sel-${slot}-${k}" data-slot="${slot}" data-key="${k}">`+
+    tbl.header.map((h,i)=>`<option value="${i}"${tbl.map[k]===i?" selected":""}>${h||"(column "+(i+1)+")"}</option>`).join("")+
+    `</select>`).join("");
+  box.querySelectorAll("select").forEach(s=>s.addEventListener("change",()=>{
+    const t=s.dataset.slot==="a"?S.tblA:S.tblB;
+    t.map[s.dataset.key]=Number(s.value);
+    if(s.dataset.slot==="a") S.A=buildIndex(t); else S.B=buildIndex(t);
+    updateMeta(s.dataset.slot); refresh();
+  }));
+}
+function updateMeta(slot){
+  const up=slot.toUpperCase();
+  const idx=slot==="a"?S.A:S.B;
+  document.getElementById("fname"+up).textContent=slot==="a"?S.nameA:S.nameB;
+  document.getElementById("meta"+up).innerHTML=idx?`<b>${int(idx.size)}</b> genes`:"";
+  document.getElementById("drop"+up).classList.toggle("loaded",!S.demo);
+}
+async function loadFile(slot,file){
+  const msg=document.getElementById("loadMsg");
+  msg.textContent="Reading "+file.name+"…";
+  try{
+    const text=await file.text();
+    const tbl=parseTable(text,file.name);
+    const idx=buildIndex(tbl);
+    if(!idx.size) throw new Error("no usable rows in "+file.name);
+    if(S.demo){
+      S.demo=false;
+      if(slot==="a"){ S.B=null; S.nameB="— drop contrast B —"; S.tblB=null; }
+      else { S.A=null; S.nameA="— drop contrast A —"; S.tblA=null; }
+      updateMeta(slot==="a"?"b":"a"); columnUi(slot==="a"?"b":"a");
+    }
+    if(slot==="a"){ S.A=idx; S.nameA=file.name; S.tblA=tbl; }
+    else { S.B=idx; S.nameB=file.name; S.tblB=tbl; }
+    const guess=file.name.replace(/\.(csv|tsv|txt)$/i,"").replace(/[_]+/g," ");
+    const labEl=document.getElementById(slot==="a"?"labA":"labB");
+    labEl.value=guess+" — log2 fold change";
+    updateMeta(slot); columnUi(slot);
+    msg.textContent="";
+    if(S.A&&S.B) refresh(); else { clearPlot(); }
+  }catch(err){
+    msg.textContent=err.message||String(err);
+  }
+}
+function clearPlot(){
+  const svg=document.getElementById("chart");
+  svg.textContent=""; svg.setAttribute("viewBox","0 0 880 220");
+  const t=el("text",{x:440,y:112,"text-anchor":"middle",fill:cssVar("--ink3"),
+    "font-family":"IBM Plex Sans, sans-serif","font-size":14});
+  t.textContent="Load the second contrast to draw the plot.";
+  svg.appendChild(el("rect",{x:0,y:0,width:880,height:220,fill:cssVar("--surface")}));
+  svg.appendChild(t);
+  document.getElementById("cards").innerHTML="";
+  document.getElementById("statTable").innerHTML="";
+  document.getElementById("geneTable").innerHTML="";
+  document.getElementById("legend").innerHTML="";
+}
+
+for(const slot of ["a","b"]){
+  const up=slot.toUpperCase();
+  const zone=document.getElementById("drop"+up);
+  const input=document.getElementById("file"+up);
+  document.querySelector(`[data-pick="${slot}"]`).addEventListener("click",()=>input.click());
+  input.addEventListener("change",()=>{ if(input.files[0]) loadFile(slot,input.files[0]); });
+  zone.addEventListener("dragover",e=>{e.preventDefault();zone.classList.add("over");});
+  zone.addEventListener("dragleave",()=>zone.classList.remove("over"));
+  zone.addEventListener("drop",e=>{
+    e.preventDefault(); zone.classList.remove("over");
+    const f=e.dataTransfer.files[0]; if(f) loadFile(slot,f);
+  });
+}
+for(const id of ["tPadj","tLfc","hiGenes","labMode","labMax"])
+  document.getElementById(id).addEventListener("change",()=>{ if(S.A&&S.B) refresh(); });
+for(const id of ["labA","labB"])
+  document.getElementById(id).addEventListener("change",()=>{ if(S.A&&S.B) draw(); });
+
+document.getElementById("expSvg").addEventListener("click",()=>
+  saveFile("concordance.svg",serialiseSvg()));
+document.getElementById("expCsv").addEventListener("click",()=>
+  saveFile("shared_genes.csv",sharedCsv()));
+document.getElementById("expTxt").addEventListener("click",()=>
+  saveFile("concordance_stats.txt",statsText()));
+document.getElementById("expPng").addEventListener("click",async()=>{
+  const msg=document.getElementById("expMsg");
+  msg.textContent="Rendering…";
+  try{
+    const svgText=serialiseSvg();
+    const blob=new Blob([svgText],{type:"image/svg+xml;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    await new Promise((res,rej)=>{img.onload=res;img.onerror=()=>rej(new Error("render failed"));img.src=url;});
+    const sc=2, cv=document.createElement("canvas");
+    cv.width=880*sc; cv.height=760*sc;
+    const ctx=cv.getContext("2d");
+    ctx.fillStyle=cssVar("--surface"); ctx.fillRect(0,0,cv.width,cv.height);
+    ctx.drawImage(img,0,0,cv.width,cv.height);
+    URL.revokeObjectURL(url);
+    const png=await new Promise(r=>cv.toBlob(r,"image/png"));
+    if(!png) throw new Error("render failed");
+    await saveFile("concordance.png",png);
+  }catch(err){ msg.textContent="Could not render the PNG."; }
+});
+
+const d=demo();
+S.A=d.A; S.B=d.B;
+document.getElementById("hiGenes").value="SIM0001 SIM0006 SIM0011 SIM0016 SIM0021";
+updateMeta("a"); updateMeta("b");
+refresh();
+window.addEventListener("resize",()=>{ if(S.A&&S.B) draw(); });
+const mq=window.matchMedia("(prefers-color-scheme: dark)");
+mq.addEventListener("change",()=>{ if(S.A&&S.B) draw(); });
+</script>
+
+</body>
+</html>
